@@ -7,8 +7,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const token = req.headers.authorization?.split(' ')[1];
-  const { data: user, error: authErr } = await supabase.auth.api.getUser(token);
-  if (authErr) {
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+  if (authErr || !user) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 

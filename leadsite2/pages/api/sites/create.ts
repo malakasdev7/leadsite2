@@ -1,5 +1,5 @@
-import { supabase } from '../../utils/supabaseClient';
-import { siteQueue } from '../../utils/queues';
+import { supabase } from '../../../utils/supabaseClient';
+import { siteQueue } from '../../../utils/queues';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
