@@ -23,7 +23,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     title,
     template_id: templateId,
     config,
-  }).single();
+  }).select().single();
 
   if (dbErr) {
     return res.status(500).json({ error: dbErr.message });

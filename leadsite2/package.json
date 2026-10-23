@@ -12,27 +12,27 @@
     "worker:whatsapp": "ts-node ./workers/whatsappWorker.ts"
   },
   "dependencies": {
+    "@next-auth/supabase-adapter": "^0.2.1",
     "@supabase/supabase-js": "^2.39.0",
     "@upstash/redis": "^1.28.0",
+    "axios": "^1.7.2",
     "bullmq": "^5.8.2",
     "next": "13.5.6",
     "next-auth": "^4.24.5",
+    "openai": "^4.28.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "recharts": "^2.12.1",
-    "openai": "^4.28.2",
-    "twilio": "^5.0.0",
     "stripe": "^14.24.0",
-    "sendgrid": "^8.9.1",
-    "axios": "^1.7.2"
+    "twilio": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
-    "typescript": "^5.4.2",
-    "ts-node": "^10.9.2",
     "eslint": "^8.57.0",
-    "eslint-config-next": "^13.5.6"
+    "eslint-config-next": "^13.5.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.2"
   }
 }

@@ -20,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     email,
     phone,
     custom_fields: customFields,
-  });
+  }).select();
 
   if (error) {
     return res.status(500).json({ error: error.message });

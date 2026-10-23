@@ -1,9 +1,8 @@
-import NextAuth from 'next-auth';
+import NextAuth, { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import { SupabaseAdapter } from '@next-auth/supabase-adapter';
-import { supabase } from '../../../utils/supabaseClient';
 
-export const authOptions = {
+export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -11,14 +10,15 @@ export const authOptions = {
     }),
   ],
   adapter: SupabaseAdapter({
-    supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    secret: process.env.SUPABASE_SERVICE_ROLE_KEY!,
   }),
   secret: process.env.NEXTAUTH_SECRET,
   callbacks: {
     async session({ session, token }) {
-      // Attach the user id and any custom claims
-      session.user.id = token.sub;
+      if (session.user && token.sub) {
+        (session.user as any).id = token.sub;
+      }
       return session;
     },
   },
