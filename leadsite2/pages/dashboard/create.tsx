@@ -21,7 +21,7 @@ const CreateSite: NextPage = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.user?.accessToken}`
+          'Authorization': `Bearer ${(session as any)?.accessToken || (session?.user as any)?.accessToken || ''}`
         },
         body: JSON.stringify(formData),
       });
