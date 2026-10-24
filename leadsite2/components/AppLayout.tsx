@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { PLANS, PlanId, PLAN_ORDER } from '../utils/leadsiteConstants';
-import { loadQuota, saveQuota, UserQuotaState } from '../utils/leadsiteStore';
-import { FaqChatWidget } from './FaqChatWidget';
+import {
+  BlackDevSettings,
+  INITIAL_SETTINGS,
+  LeadItem,
+  loadLeads,
+  loadSettings,
+} from '../utils/leadsiteStore';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -12,26 +16,76 @@ interface AppLayoutProps {
   actions?: React.ReactNode;
 }
 
+export interface ToastPayload {
+  message: string;
+  type?: 'success' | 'error' | 'info';
+}
+
+export function showToast(message: string, type: 'success' | 'error' | 'info' = 'success') {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent<ToastPayload>('blackdev-toast', {
+        detail: { message, type },
+      })
+    );
+  }
+}
+
 export const AppLayout: React.FC<AppLayoutProps> = ({ children, title, subtitle, actions }) => {
   const router = useRouter();
-  const [quota, setQuota] = useState<UserQuotaState>({
-    plan: 'pro',
-    leadsUsed: 6,
-    sitesUsed: 1,
-    scriptsUsed: 4,
-    editsUsed: 2,
-  });
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(true);
+  const [settings, setSettings] = useState<BlackDevSettings>(INITIAL_SETTINGS);
+  const [globalQuery, setGlobalQuery] = useState('');
+  const [quickResults, setQuickResults] = useState<LeadItem[]>([]);
+  const [toast, setToast] = useState<ToastPayload | null>(null);
 
   useEffect(() => {
-    setQuota(loadQuota());
+    setSettings(loadSettings());
     const currentTheme = document.documentElement.getAttribute('data-theme');
-    setDark(currentTheme === 'dark');
+    if (!currentTheme) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      setDark(true);
+    } else {
+      setDark(currentTheme === 'dark');
+    }
 
-    const handleQuotaUpdate = () => setQuota(loadQuota());
-    window.addEventListener('leadsite-quota-updated', handleQuotaUpdate);
-    return () => window.removeEventListener('leadsite-quota-updated', handleQuotaUpdate);
+    const handleToast = (e: Event) => {
+      const custom = e as CustomEvent<ToastPayload>;
+      if (custom.detail?.message) {
+        setToast(custom.detail);
+        setTimeout(() => setToast(null), 3500);
+      }
+    };
+
+    const handleSettingsUpdated = () => setSettings(loadSettings());
+
+    window.addEventListener('blackdev-toast', handleToast);
+    window.addEventListener('blackdev-settings-updated', handleSettingsUpdated);
+    return () => {
+      window.removeEventListener('blackdev-toast', handleToast);
+      window.removeEventListener('blackdev-settings-updated', handleSettingsUpdated);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!globalQuery.trim()) {
+      setQuickResults([]);
+      return;
+    }
+    const q = globalQuery.trim().toLowerCase();
+    const all = loadLeads();
+    setQuickResults(
+      all
+        .filter(
+          l =>
+            l.name.toLowerCase().includes(q) ||
+            l.category.toLowerCase().includes(q) ||
+            l.city.toLowerCase().includes(q) ||
+            (l.phone || '').includes(q)
+        )
+        .slice(0, 5)
+    );
+  }, [globalQuery]);
 
   const toggleTheme = () => {
     const next = !dark;
@@ -39,38 +93,51 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, title, subtitle,
     document.documentElement.setAttribute('data-theme', next ? 'dark' : 'light');
   };
 
-  const handleChangePlan = (newPlan: PlanId) => {
-    const updated = { ...quota, plan: newPlan };
-    setQuota(updated);
-    saveQuota(updated);
-    window.dispatchEvent(new Event('leadsite-quota-updated'));
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    router.push('/login');
   };
 
-  const currentPlanDef = PLANS[quota.plan];
-
   const navItems = [
-    { href: '/dashboard', label: 'Dashboard', badge: null },
-    { href: '/leads', label: 'Buscar Leads', badge: 'Maps' },
-    { href: '/studio', label: 'Editor de Site IA', badge: 'Studio' },
-    { href: '/crm', label: 'CRM & Agendamentos', badge: 'Funil' },
+    { href: '/dashboard', label: 'Dashboard', icon: '📊', badge: null },
+    { href: '/leads', label: 'Buscar Leads', icon: '🔍', badge: 'Maps' },
+    { href: '/studio', label: 'Editor de Sites', icon: '🎨', badge: 'IA' },
+    { href: '/crm', label: 'CRM Comercial', icon: '🗂️', badge: 'Funil' },
+    { href: '/compromissos', label: 'Compromissos', icon: '📅', badge: 'Agenda' },
+    { href: '/settings', label: 'Configurações', icon: '⚙️', badge: null },
   ];
+
+  const initials = (settings.adminName || 'BD')
+    .split(' ')
+    .map(w => w[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-[--bg] text-[--text]">
-      {/* Sidebar */}
-      <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-[--border-dim] glass-sidebar flex flex-col justify-between p-4">
+      {/* Fixed Sidebar */}
+      <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-[--border-dim] glass-sidebar flex flex-col justify-between p-4 md:sticky md:top-0 md:h-screen">
         <div>
           <div className="flex items-center justify-between px-2 py-2 mb-6">
-            <Link href="/" className="flex items-center gap-2">
-              <img src="/logo.svg" alt="LeadSite" className="logo-img h-[20px] w-auto" />
+            <Link href="/dashboard" className="flex items-center gap-2.5">
+              <div
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-white font-black text-[12.5px] tracking-tighter shadow-md"
+                style={{
+                  background: `linear-gradient(135deg, ${settings.brandPrimaryColor || '#2563EB'} 0%, #1E40AF 100%)`,
+                }}
+              >
+                BD
+              </div>
+              <div>
+                <span className="text-[15.5px] font-extrabold tracking-tight text-[--text] block leading-none">
+                  {settings.brandName || 'BlackDev Leads'}
+                </span>
+                <span className="text-[10px] font-semibold text-[--text-4] uppercase tracking-wider">
+                  Painel Interno
+                </span>
+              </div>
             </Link>
-            <button
-              onClick={toggleTheme}
-              className="text-[12px] px-2.5 py-1 rounded-lg border border-[--border] text-[--text-3] hover:text-[--text]"
-              title="Alternar tema Claro/Escuro"
-            >
-              {dark ? '☀️ Claro' : '🌙 Escuro'}
-            </button>
           </div>
 
           <nav className="flex flex-row md:flex-col gap-1.5 overflow-x-auto pb-2 md:pb-0">
@@ -86,9 +153,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, title, subtitle,
                       ? 'text-white shadow-sm'
                       : 'text-[--text-3] hover:text-[--text] hover:bg-[--bg-2]'
                   }`}
-                  style={active ? { background: '#0071E3' } : undefined}
+                  style={
+                    active
+                      ? { background: settings.brandPrimaryColor || '#2563EB' }
+                      : undefined
+                  }
                 >
-                  <span>{item.label}</span>
+                  <span className="flex items-center gap-2.5">
+                    <span>{item.icon}</span>
+                    <span>{item.label}</span>
+                  </span>
                   {item.badge && (
                     <span
                       className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -104,83 +178,137 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, title, subtitle,
           </nav>
         </div>
 
-        {/* Plan & Quota Box */}
-        <div className="mt-6 pt-4 border-t border-[--border-dim] space-y-3">
-          <div className="glass-card rounded-xl p-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[--text-4]">
-                Plano Ativo
-              </span>
-              <select
-                value={quota.plan}
-                onChange={e => handleChangePlan(e.target.value as PlanId)}
-                className="text-[11.5px] font-bold px-2 py-0.5 rounded-md border border-[--border] bg-[--bg-card] text-[#0071E3]"
+        {/* Admin Footer Box */}
+        <div className="mt-6 pt-4 border-t border-[--border-dim] space-y-2.5">
+          <div className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-extrabold shrink-0"
+                style={{ background: settings.brandPrimaryColor || '#2563EB' }}
               >
-                {PLAN_ORDER.map(pid => (
-                  <option key={pid} value={pid}>
-                    {PLANS[pid].name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-1.5 text-[11.5px]">
-              <div className="flex justify-between text-[--text-3]">
-                <span>Leads no mês</span>
-                <span className="font-semibold">
-                  {quota.leadsUsed} / {currentPlanDef.limits.leadsPerMonth}
-                </span>
+                {initials}
               </div>
-              <div className="flex justify-between text-[--text-3]">
-                <span>Sites gerados</span>
-                <span className="font-semibold">
-                  {quota.sitesUsed} / {currentPlanDef.limits.sitesPerMonth}
-                </span>
-              </div>
-              <div className="flex justify-between text-[--text-3]">
-                <span>Scripts de venda</span>
-                <span className="font-semibold">
-                  {quota.scriptsUsed} / {currentPlanDef.limits.scriptsPerMonth}
-                </span>
-              </div>
-              <div className="flex justify-between text-[--text-3]">
-                <span>Edições no chat</span>
-                <span className="font-semibold">
-                  {quota.editsUsed} / {currentPlanDef.limits.editsPerMonth}
-                </span>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-bold text-[--text] truncate">
+                  {settings.adminName}
+                </div>
+                <div className="text-[10.5px] text-[--text-4] truncate">
+                  {settings.adminEmail}
+                </div>
               </div>
             </div>
-
-            <Link
-              href="/#precos"
-              className="mt-3 block w-full text-center text-[12px] font-bold py-1.5 rounded-lg text-white transition-opacity hover:opacity-90"
-              style={{ background: '#0071E3' }}
+            <button
+              onClick={handleLogout}
+              title="Sair do painel"
+              className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-[--border] text-[--text-3] hover:text-red-500 hover:border-red-500/40 shrink-0"
             >
-              Ver limites dos planos
-            </Link>
+              Sair
+            </button>
           </div>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 min-w-0 p-5 sm:p-8 max-w-7xl mx-auto w-full">
-        {(title || actions) && (
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-[--border-dim]">
-            <div>
-              {title && (
-                <h1 className="text-[clamp(1.4rem,2.5vw,2rem)] font-extrabold tracking-tight text-[--text]">
-                  {title}
-                </h1>
-              )}
-              {subtitle && <p className="text-[14px] text-[--text-3] mt-1">{subtitle}</p>}
-            </div>
-            {actions && <div className="flex items-center gap-2.5 flex-wrap">{actions}</div>}
+      {/* Main Content Area */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Topbar with Global Search & Admin Avatar */}
+        <header className="sticky top-0 z-30 border-b border-[--border-dim] bg-[--bg]/90 backdrop-blur-md px-5 sm:px-8 h-16 flex items-center justify-between gap-4">
+          <div className="relative flex-1 max-w-md">
+            <input
+              type="text"
+              value={globalQuery}
+              onChange={e => setGlobalQuery(e.target.value)}
+              placeholder="🔎 Busca global de leads, empresas, cidades ou telefones..."
+              className="w-full px-3.5 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[12.5px]"
+            />
+            {quickResults.length > 0 && (
+              <div className="absolute left-0 right-0 top-11 glass-card rounded-2xl p-2 shadow-2xl border border-[--border] z-50 divide-y divide-[--border-dim]">
+                {quickResults.map(lead => (
+                  <button
+                    key={lead.id}
+                    type="button"
+                    onClick={() => {
+                      setGlobalQuery('');
+                      router.push(`/crm?leadId=${lead.id}`);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-[--bg-2] flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-[--text]">{lead.name}</div>
+                      <div className="text-[11px] text-[--text-4]">
+                        {lead.category} · {lead.city}/{lead.state}
+                      </div>
+                    </div>
+                    <span className="text-[10.5px] font-bold text-[#2563EB]">
+                      {lead.stage} →
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-        {children}
-      </main>
 
-      <FaqChatWidget place="app" />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleTheme}
+              className="text-[12px] font-semibold px-3 py-1.5 rounded-xl border border-[--border] bg-[--bg-card] text-[--text-3] hover:text-[--text]"
+            >
+              {dark ? '☀️ Tema Claro' : '🌙 Tema Escuro'}
+            </button>
+
+            <Link
+              href="/settings"
+              className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border border-[--border] bg-[--bg-card] hover:border-[#2563EB]"
+            >
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
+                style={{ background: settings.brandPrimaryColor || '#2563EB' }}
+              >
+                {initials}
+              </div>
+              <span className="text-[12px] font-semibold text-[--text]">
+                {settings.adminName.split(' ')[0]}
+              </span>
+            </Link>
+          </div>
+        </header>
+
+        <main className="flex-1 p-5 sm:p-8 max-w-7xl mx-auto w-full">
+          {(title || actions) && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-[--border-dim]">
+              <div>
+                {title && (
+                  <h1 className="text-[clamp(1.35rem,2.3vw,1.85rem)] font-extrabold tracking-tight text-[--text]">
+                    {title}
+                  </h1>
+                )}
+                {subtitle && <p className="text-[13.5px] text-[--text-3] mt-1">{subtitle}</p>}
+              </div>
+              {actions && <div className="flex items-center gap-2.5 flex-wrap">{actions}</div>}
+            </div>
+          )}
+          {children}
+        </main>
+      </div>
+
+      {/* Global Toast Notification */}
+      {toast && (
+        <div
+          className="fixed bottom-5 right-5 z-50 px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold flex items-center gap-2.5 transition-all"
+          style={{
+            background:
+              toast.type === 'error'
+                ? '#7F1D1D'
+                : toast.type === 'info'
+                ? '#1E3A8A'
+                : '#065F46',
+            borderColor: 'rgba(255,255,255,0.18)',
+            color: '#FFFFFF',
+          }}
+        >
+          <span>{toast.type === 'error' ? '⚠️' : toast.type === 'info' ? 'ℹ️' : '✅'}</span>
+          <span>{toast.message}</span>
+        </div>
+      )}
     </div>
   );
 };

@@ -3,393 +3,909 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import React, { useEffect, useState } from 'react';
-import { AppLayout } from '../../components/AppLayout';
-import { ALL_CATEGORIES } from '../../utils/leadsiteConstants';
+import { AppLayout, showToast } from '../../components/AppLayout';
 import {
-  buildInitialSiteConfig,
   GeneratedSite,
-  loadQuota,
   loadSites,
-  saveQuota,
   saveSites,
+  SiteConfig,
+  SitePublishStatus,
+  SiteSectionsVisibility,
 } from '../../utils/leadsiteStore';
 
-const QUICK_PROMPTS = [
-  'deixe o botão verde',
-  'tema escuro premium',
-  'mude o botão para "Agendar Horário no WhatsApp"',
-  'adicione desconto de 15% na primeira visita',
-  'deixe as cores em azul royal',
-  'deixe as cores em dourado e preto',
-];
+type EditorTab = 'ai' | 'design' | 'services' | 'contact' | 'versions';
+type ViewportSize = 'desktop' | 'tablet' | 'mobile';
+
+const DEFAULT_SECTIONS: SiteSectionsVisibility = {
+  hero: true,
+  services: true,
+  about: true,
+  gallery: true,
+  testimonials: true,
+  map: true,
+  contactForm: true,
+};
 
 const StudioPage: NextPage = () => {
   const router = useRouter();
   const [sites, setSites] = useState<GeneratedSite[]>([]);
   const [activeSiteId, setActiveSiteId] = useState<string>('');
-  const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
-  const [chatInput, setChatInput] = useState('');
+  const [viewport, setViewport] = useState<ViewportSize>('desktop');
+  const [tab, setTab] = useState<EditorTab>('ai');
+  const [instruction, setInstruction] = useState('');
   const [editing, setEditing] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [showNewModal, setShowNewModal] = useState(false);
 
-  // New custom business form ("Crie sites pra quem não está na busca")
-  const [customName, setCustomName] = useState('');
-  const [customCategory, setCustomCategory] = useState('Restaurante');
-  const [customCity, setCustomCity] = useState('São Paulo');
-  const [customPhone, setCustomPhone] = useState('5511999999999');
+  // Draft config for live visual editing
+  const [draftConfig, setDraftConfig] = useState<SiteConfig | null>(null);
 
   useEffect(() => {
     const loaded = loadSites();
     setSites(loaded);
-    const qSiteId = typeof router.query.siteId === 'string' ? router.query.siteId : '';
-    if (qSiteId && loaded.some(s => s.id === qSiteId)) {
-      setActiveSiteId(qSiteId);
+    const qId = typeof router.query.siteId === 'string' ? router.query.siteId : '';
+    if (qId && loaded.some(s => s.id === qId)) {
+      setActiveSiteId(qId);
     } else if (loaded.length > 0) {
       setActiveSiteId(loaded[0].id);
     }
   }, [router.query.siteId]);
 
   const activeSite = sites.find(s => s.id === activeSiteId) || sites[0];
-  const currentVersion =
-    activeSite?.versions[activeSite.currentVersionIndex] || activeSite?.versions[0];
-  const cfg = currentVersion?.config;
 
-  const handleApplyChatEdit = async (instructionText?: string) => {
-    const prompt = (instructionText ?? chatInput).trim();
-    if (!prompt || !activeSite || !cfg) return;
+  useEffect(() => {
+    if (activeSite) {
+      const currentVer =
+        activeSite.versions[activeSite.currentVersionIndex] || activeSite.versions[0];
+      setDraftConfig({
+        ...currentVer.config,
+        sections: { ...DEFAULT_SECTIONS, ...(currentVer.config.sections || {}) },
+      });
+    }
+  }, [activeSiteId, activeSite?.currentVersionIndex, sites.length]);
+
+  if (!activeSite || !draftConfig) {
+    return (
+      <AppLayout title="Editor de Sites IA">
+        <div className="glass-card rounded-2xl p-10 text-center">
+          <p className="text-[14px] text-[--text-3] mb-4">
+            Nenhum site gerado ainda. Vá até Buscar Leads e clique em &ldquo;Gerar site&rdquo;.
+          </p>
+          <Link
+            href="/leads"
+            className="inline-block px-5 py-2.5 rounded-xl text-white font-bold text-[13px]"
+            style={{ background: '#2563EB' }}
+          >
+            Ir para Busca de Leads →
+          </Link>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  const persistConfigUpdate = (nextConfig: SiteConfig, label = 'Edição manual no Studio') => {
+    setDraftConfig(nextConfig);
+    const nextVersionNumber = activeSite.versions.length + 1;
+    const updatedSite: GeneratedSite = {
+      ...activeSite,
+      updatedAt: new Date().toISOString(),
+      currentVersionIndex: activeSite.versions.length,
+      versions: [
+        ...activeSite.versions,
+        {
+          versionNumber: nextVersionNumber,
+          createdAt: new Date().toISOString(),
+          instruction: label,
+          config: nextConfig,
+        },
+      ],
+    };
+    const nextSites = sites.map(s => (s.id === activeSite.id ? updatedSite : s));
+    setSites(nextSites);
+    saveSites(nextSites);
+    showToast(`Versão v${nextVersionNumber} salva com sucesso!`, 'success');
+  };
+
+  const handleAiPrompt = async (promptText: string) => {
+    if (!promptText.trim() || editing) return;
     setEditing(true);
     try {
       const res = await fetch('/api/sites/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: cfg, instruction: prompt }),
+        body: JSON.stringify({
+          instruction: promptText,
+          currentConfig: draftConfig,
+        }),
       });
       const data = await res.json();
       if (data?.config) {
-        const nextVersionNumber = activeSite.versions.length + 1;
-        const newVersion = {
-          versionNumber: nextVersionNumber,
-          createdAt: new Date().toISOString(),
-          instruction: prompt,
-          config: data.config,
-        };
-        const updatedSites = sites.map(s => {
-          if (s.id !== activeSite.id) return s;
-          const nextVersions = [...s.versions, newVersion];
-          return {
-            ...s,
-            versions: nextVersions,
-            currentVersionIndex: nextVersions.length - 1,
-            updatedAt: new Date().toISOString(),
-          };
-        });
-        setSites(updatedSites);
-        saveSites(updatedSites);
-        setChatInput('');
-
-        const q = loadQuota();
-        saveQuota({ ...q, editsUsed: q.editsUsed + 1 });
-        window.dispatchEvent(new Event('leadsite-quota-updated'));
+        persistConfigUpdate(data.config, `IA: ${promptText}`);
+        setInstruction('');
       }
     } catch {
-      alert('Erro ao aplicar edição no site.');
+      showToast('Erro ao aplicar comando de IA.', 'error');
     } finally {
       setEditing(false);
     }
   };
 
-  const handleRollbackVersion = (idx: number) => {
-    if (!activeSite) return;
-    const updatedSites = sites.map(s =>
-      s.id === activeSite.id ? { ...s, currentVersionIndex: idx, updatedAt: new Date().toISOString() } : s
-    );
-    setSites(updatedSites);
-    saveSites(updatedSites);
-  };
-
-  const handleTogglePublish = () => {
-    if (!activeSite) return;
-    const updatedSites = sites.map(s =>
-      s.id === activeSite.id ? { ...s, published: !s.published } : s
-    );
-    setSites(updatedSites);
-    saveSites(updatedSites);
-  };
-
-  const handleCopyUrl = () => {
-    if (!activeSite) return;
-    const publicUrl = `${window.location.origin}/s/${activeSite.slug}`;
-    navigator.clipboard.writeText(publicUrl).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
-  };
-
-  const handleCreateCustomSite = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customName.trim()) return;
-    const slug = customName
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-
-    const mockLead = {
-      id: `custom-${Date.now()}`,
-      name: customName.trim(),
-      category: customCategory,
-      state: 'SP',
-      city: customCity.trim() || 'São Paulo',
-      address: `Centro, ${customCity.trim() || 'São Paulo'}`,
-      phone: customPhone.replace(/\D/g, '') || '5511999999999',
-      rating: 4.9,
-      reviewsCount: 85,
-      score: 90,
-      tier: 'quente' as const,
-      flags: ['Sem site' as const],
-      stage: 'Base' as const,
-      inCrm: true,
-      createdAt: new Date().toISOString(),
-    };
-
-    const newSite: GeneratedSite = {
-      id: `site-${Date.now()}`,
-      slug: `${slug}-${Math.floor(100 + Math.random() * 900)}`,
-      leadId: mockLead.id,
-      businessName: mockLead.name,
-      category: mockLead.category,
-      city: mockLead.city,
-      state: mockLead.state,
-      published: true,
-      removeBadge: false,
-      createdAt: new Date().toISOString(),
+  const handleRestoreVersion = (index: number) => {
+    const updatedSite: GeneratedSite = {
+      ...activeSite,
+      currentVersionIndex: index,
       updatedAt: new Date().toISOString(),
-      currentVersionIndex: 0,
-      versions: [
-        {
-          versionNumber: 1,
-          createdAt: new Date().toISOString(),
-          instruction: 'Criado manualmente fora da busca com IA',
-          config: buildInitialSiteConfig(mockLead),
-        },
-      ],
     };
-
-    const updated = [newSite, ...sites];
-    setSites(updated);
-    saveSites(updated);
-    setActiveSiteId(newSite.id);
-    setShowNewModal(false);
-    setCustomName('');
+    const nextSites = sites.map(s => (s.id === activeSite.id ? updatedSite : s));
+    setSites(nextSites);
+    saveSites(nextSites);
+    setDraftConfig(updatedSite.versions[index].config);
+    showToast(`Versão v${updatedSite.versions[index].versionNumber} restaurada!`, 'info');
   };
+
+  const handleStatusChange = (nextStatus: SitePublishStatus) => {
+    const updatedSite: GeneratedSite = {
+      ...activeSite,
+      status: nextStatus,
+      published: nextStatus === 'published',
+      updatedAt: new Date().toISOString(),
+    };
+    const nextSites = sites.map(s => (s.id === activeSite.id ? updatedSite : s));
+    setSites(nextSites);
+    saveSites(nextSites);
+    showToast(
+      nextStatus === 'published'
+        ? 'Site publicado e acessível no link público!'
+        : nextStatus === 'archived'
+        ? 'Site arquivado.'
+        : 'Site despublicado (modo rascunho).',
+      'success'
+    );
+  };
+
+  const handleCopyPublicUrl = () => {
+    const url = `${window.location.origin}/site/${activeSite.slug}`;
+    navigator.clipboard.writeText(url);
+    showToast(`Link público copiado: /site/${activeSite.slug}`, 'success');
+  };
+
+  const sections = draftConfig.sections || DEFAULT_SECTIONS;
+  const pubStatus: SitePublishStatus =
+    activeSite.status || (activeSite.published ? 'published' : 'draft');
 
   return (
     <>
       <Head>
-        <title>Editor de Site IA (/studio) — LeadSite</title>
+        <title>Editor de Sites — {activeSite.businessName} · BlackDev Leads</title>
       </Head>
 
       <AppLayout
-        title="Editor Conversacional de Site IA"
-        subtitle="Clique em qualquer elemento ou descreva a alteração em português no chat. Cada mudança salva uma versão no histórico."
+        title="Editor Visual & Conversacional de Sites"
+        subtitle="Clique diretamente nos textos do site ao lado para editar ou use o painel lateral e o assistente IA."
         actions={
           <>
             <select
-              value={activeSite?.id || ''}
+              value={activeSite.id}
               onChange={e => setActiveSiteId(e.target.value)}
-              className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[13px] font-semibold"
+              className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[12.5px] font-bold"
             >
               {sites.map(s => (
                 <option key={s.id} value={s.id}>
-                  {s.businessName} ({s.category})
+                  {s.businessName} ({s.city}/{s.state})
                 </option>
               ))}
             </select>
 
-            <button
-              onClick={() => setShowNewModal(true)}
-              className="text-[12.5px] font-semibold px-3.5 py-2 rounded-xl border border-[--border] bg-[--bg-card] hover:border-[#0071E3]"
+            <select
+              value={pubStatus}
+              onChange={e => handleStatusChange(e.target.value as SitePublishStatus)}
+              className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[12px] font-bold"
             >
-              + Criar site avulso
+              <option value="published">🟢 Publicado</option>
+              <option value="draft">🟡 Despublicado (Rascunho)</option>
+              <option value="archived">🔴 Arquivado</option>
+            </select>
+
+            <button
+              onClick={() => persistConfigUpdate(draftConfig, 'Alterações salvas manualmente')}
+              className="text-[12px] font-bold px-4 py-2 rounded-xl text-white"
+              style={{ background: '#2563EB' }}
+            >
+              💾 Salvar Versão
             </button>
 
-            {activeSite && (
-              <>
-                <button
-                  onClick={handleCopyUrl}
-                  className="text-[12.5px] font-bold px-4 py-2 rounded-xl text-white"
-                  style={{ background: '#0071E3' }}
-                >
-                  {copied ? '✓ Link Copiado!' : '🔗 Copiar URL Pública'}
-                </button>
-                <Link
-                  href={`/s/${activeSite.slug}`}
-                  target="_blank"
-                  className="text-[12.5px] font-semibold px-3.5 py-2 rounded-xl border border-[--border] bg-[--bg-card] hover:border-[#1A7E3A]"
-                >
-                  Abrir Site ↗
-                </Link>
-              </>
-            )}
+            <button
+              onClick={handleCopyPublicUrl}
+              className="text-[12px] font-semibold px-3.5 py-2 rounded-xl border border-[--border] bg-[--bg-card] hover:border-[#2563EB]"
+            >
+              🔗 Copiar Link (/site/{activeSite.slug})
+            </button>
+
+            <Link
+              href={`/site/${activeSite.slug}`}
+              target="_blank"
+              className="text-[12px] font-bold px-3.5 py-2 rounded-xl text-white"
+              style={{ background: '#10B981' }}
+            >
+              🌐 Abrir Site Público ↗
+            </Link>
           </>
         }
       >
-        {showNewModal && (
-          <div className="glass-card rounded-2xl p-5 mb-6 border border-[#0071E3]">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-[15px] font-bold">Criar site para empresa fora da busca</h3>
-              <button onClick={() => setShowNewModal(false)} className="text-[13px] text-[--text-4]">
-                ✕ Fechar
-              </button>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left Side Panel: 5 Tabs */}
+          <div className="lg:col-span-5 glass-card rounded-2xl p-5 flex flex-col gap-4">
+            {/* Tabs Bar */}
+            <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[--bg-2] text-[11px] font-bold">
+              {[
+                { id: 'ai', label: '✨ Textos/IA' },
+                { id: 'design', label: '🎨 Design' },
+                { id: 'services', label: '🛠️ Seções' },
+                { id: 'contact', label: '📞 Contato' },
+                { id: 'versions', label: `🕒 v${activeSite.versions.length}` },
+              ].map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id as EditorTab)}
+                  className={`py-2 px-1 rounded-lg transition-all text-center truncate ${
+                    tab === t.id
+                      ? 'bg-[#2563EB] text-white shadow-sm'
+                      : 'text-[--text-3] hover:text-[--text]'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
-            <form onSubmit={handleCreateCustomSite} className="grid sm:grid-cols-4 gap-3">
-              <input
-                type="text"
-                required
-                placeholder="Nome do Negócio"
-                value={customName}
-                onChange={e => setCustomName(e.target.value)}
-                className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[13px]"
-              />
-              <select
-                value={customCategory}
-                onChange={e => setCustomCategory(e.target.value)}
-                className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[13px]"
-              >
-                {ALL_CATEGORIES.map(c => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                placeholder="Cidade"
-                value={customCity}
-                onChange={e => setCustomCity(e.target.value)}
-                className="px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card] text-[13px]"
-              />
-              <button
-                type="submit"
-                className="py-2 px-4 rounded-xl text-white font-bold text-[13px]"
-                style={{ background: '#0071E3' }}
-              >
-                Gerar Site Agora
-              </button>
-            </form>
-          </div>
-        )}
 
-        {activeSite && cfg ? (
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
-            {/* Left Column: Live Interactive Site Preview */}
-            <div className="glass-card rounded-2xl overflow-hidden border border-[--border-dim]">
-              {/* Browser Top Bar */}
-              <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-[--border-dim] bg-[--bg-2]">
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full" style={{ background: '#FF5F57' }} />
-                  <span className="w-3 h-3 rounded-full" style={{ background: '#FEBC2E' }} />
-                  <span className="w-3 h-3 rounded-full" style={{ background: '#28C840' }} />
-                  <span className="ml-2 text-[11.5px] font-mono text-[--text-3] bg-[--bg-card] px-3 py-1 rounded-md border border-[--border-dim]">
-                    {activeSite.slug}.useleadsite.com
-                  </span>
+            {/* TAB 1: Textos & IA */}
+            {tab === 'ai' && (
+              <div className="space-y-4 text-xs">
+                <div className="p-3.5 rounded-xl bg-[#2563EB]/10 border border-[#2563EB]/30">
+                  <div className="font-bold text-[#3B82F6] mb-1">
+                    🤖 Edição com IA em Português
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <input
+                      type="text"
+                      value={instruction}
+                      onChange={e => setInstruction(e.target.value)}
+                      placeholder="Ex: mude para tema escuro e destaque atendimento 24h..."
+                      className="flex-1 px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                    />
+                    <button
+                      type="button"
+                      disabled={editing}
+                      onClick={() => handleAiPrompt(instruction)}
+                      className="px-3.5 py-2 rounded-xl bg-[#2563EB] text-white font-bold"
+                    >
+                      {editing ? '...' : 'Aplicar'}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setViewport('desktop')}
-                    className={`text-[11.5px] px-2.5 py-1 rounded-md font-semibold ${
-                      viewport === 'desktop' ? 'bg-[#0071E3] text-white' : 'text-[--text-3]'
-                    }`}
-                  >
-                    💻 Desktop
-                  </button>
-                  <button
-                    onClick={() => setViewport('mobile')}
-                    className={`text-[11.5px] px-2.5 py-1 rounded-md font-semibold ${
-                      viewport === 'mobile' ? 'bg-[#0071E3] text-white' : 'text-[--text-3]'
-                    }`}
-                  >
-                    📱 Celular
-                  </button>
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Título Principal (Hero)
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.heroTitle}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, heroTitle: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Subtítulo (Proposta de Valor)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={draftConfig.heroSubtitle}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, heroSubtitle: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Texto do Botão Principal (CTA)
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.ctaText}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, ctaText: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Título da Seção Sobre
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.aboutTitle}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, aboutTitle: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Texto Sobre o Negócio
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={draftConfig.aboutText}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, aboutText: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-[--border-dim] space-y-2">
+                  <div className="font-bold text-[--text-4] uppercase text-[10.5px]">
+                    SEO Básico (Google & WhatsApp Preview)
+                  </div>
+                  <input
+                    type="text"
+                    value={draftConfig.seoTitle || ''}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, seoTitle: e.target.value })
+                    }
+                    placeholder="Meta Title (Título SEO)"
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                  <textarea
+                    rows={2}
+                    value={draftConfig.seoDescription || ''}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, seoDescription: e.target.value })
+                    }
+                    placeholder="Meta Description (Descrição para o Google)"
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
                 </div>
               </div>
+            )}
 
-              {/* Site Canvas */}
-              <div className="p-4 bg-[--bg-dark]/30 flex justify-center">
-                <div
-                  className={`w-full transition-all rounded-xl overflow-hidden shadow-lg border border-[--border-dim] ${
-                    viewport === 'mobile' ? 'max-w-[375px]' : 'max-w-full'
-                  }`}
-                  style={{
-                    background: cfg.darkMode ? '#0B0F19' : '#FFFFFF',
-                    color: cfg.darkMode ? '#F9FAFB' : '#111827',
-                  }}
-                >
-                  {/* Hero Banner */}
-                  <div
-                    className="px-6 py-14 text-center text-white relative"
-                    style={{
-                      background: `linear-gradient(135deg, ${cfg.primaryColor} 0%, ${cfg.secondaryColor} 100%)`,
-                    }}
-                  >
-                    <span className="inline-block text-[11px] font-semibold px-3 py-1 rounded-full bg-white/15 text-white/90 mb-4">
-                      {cfg.badgeText}
-                    </span>
-                    <h2
-                      onClick={() => setChatInput(`mude o título para "${cfg.heroTitle}"`)}
-                      className="text-[clamp(1.6rem,3.5vw,2.5rem)] font-extrabold leading-tight cursor-pointer hover:underline"
-                      title="Clique para editar este título no chat"
-                    >
-                      {cfg.heroTitle}
-                    </h2>
-                    <p
-                      onClick={() => setChatInput(`mude o subtítulo para "${cfg.heroSubtitle}"`)}
-                      className="mt-3 text-[15px] text-white/85 max-w-xl mx-auto cursor-pointer hover:underline"
-                      title="Clique para editar este subtítulo no chat"
-                    >
-                      {cfg.heroSubtitle}
-                    </p>
-                    <div className="mt-6">
-                      <a
-                        href={`https://wa.me/${cfg.phone}?text=${encodeURIComponent(cfg.whatsappMessage)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 text-[14px] font-bold px-7 py-3.5 rounded-full text-white shadow-lg transition-transform hover:scale-105"
-                        style={{ background: cfg.accentColor }}
+            {/* TAB 2: Cores, Logo & Imagens */}
+            {tab === 'design' && (
+              <div className="space-y-4 text-xs">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="font-bold block mb-1 text-[--text-3]">Cor Primária</label>
+                    <input
+                      type="color"
+                      value={draftConfig.primaryColor}
+                      onChange={e =>
+                        setDraftConfig({ ...draftConfig, primaryColor: e.target.value })
+                      }
+                      className="w-full h-10 rounded-xl cursor-pointer border border-[--border]"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold block mb-1 text-[--text-3]">Cor Secundária</label>
+                    <input
+                      type="color"
+                      value={draftConfig.secondaryColor}
+                      onChange={e =>
+                        setDraftConfig({ ...draftConfig, secondaryColor: e.target.value })
+                      }
+                      className="w-full h-10 rounded-xl cursor-pointer border border-[--border]"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold block mb-1 text-[--text-3]">Cor dos Botões</label>
+                    <input
+                      type="color"
+                      value={draftConfig.accentColor}
+                      onChange={e =>
+                        setDraftConfig({ ...draftConfig, accentColor: e.target.value })
+                      }
+                      className="w-full h-10 rounded-xl cursor-pointer border border-[--border]"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer font-bold">
+                  <input
+                    type="checkbox"
+                    checked={draftConfig.darkMode}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, darkMode: e.target.checked })
+                    }
+                    className="accent-[#2563EB]"
+                  />
+                  <span>Modo Escuro Premium no Site</span>
+                </label>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Texto da Logo / Nome no Topo
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.logoText || draftConfig.heroTitle}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, logoText: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    URL da Imagem de Logo (Opcional)
+                  </label>
+                  <input
+                    type="url"
+                    value={draftConfig.logoUrl || ''}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, logoUrl: e.target.value })
+                    }
+                    placeholder="https://..."
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Imagem Principal (Hero Banner URL)
+                  </label>
+                  <input
+                    type="url"
+                    value={draftConfig.heroImage || ''}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, heroImage: e.target.value })
+                    }
+                    placeholder="https://images.unsplash.com/..."
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Fotos da Galeria (1 URL por linha)
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={(draftConfig.galleryImages || []).join('\n')}
+                    onChange={e =>
+                      setDraftConfig({
+                        ...draftConfig,
+                        galleryImages: e.target.value
+                          .split('\n')
+                          .map(s => s.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: Serviços & Seções */}
+            {tab === 'services' && (
+              <div className="space-y-4 text-xs max-h-[540px] overflow-y-auto pr-1">
+                <div>
+                  <div className="font-bold text-[--text-4] uppercase text-[10.5px] mb-2">
+                    Seções Visíveis no Site
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        ['hero', 'Capa (Hero)'],
+                        ['services', 'Serviços'],
+                        ['about', 'Quem Somos'],
+                        ['gallery', 'Galeria de Fotos'],
+                        ['testimonials', 'Avaliações'],
+                        ['map', 'Mapa Google Maps'],
+                        ['contactForm', 'Formulário Contato'],
+                      ] as [keyof SiteSectionsVisibility, string][]
+                    ).map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 p-2 rounded-lg border border-[--border] bg-[--bg-card] cursor-pointer"
                       >
-                        💬 {cfg.ctaText}
-                      </a>
-                    </div>
+                        <input
+                          type="checkbox"
+                          checked={sections[key]}
+                          onChange={e =>
+                            setDraftConfig({
+                              ...draftConfig,
+                              sections: { ...sections, [key]: e.target.checked },
+                            })
+                          }
+                          className="accent-[#2563EB]"
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-[--border-dim] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[--text-4] uppercase text-[10.5px]">
+                      Serviços / Produtos ({draftConfig.services.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          services: [
+                            ...draftConfig.services,
+                            {
+                              title: 'Novo Serviço Especializado',
+                              description: 'Descrição detalhada do serviço com garantia.',
+                              price: 'Sob consulta',
+                            },
+                          ],
+                        })
+                      }
+                      className="text-[11px] font-bold text-[#3B82F6] hover:underline"
+                    >
+                      + Adicionar serviço
+                    </button>
                   </div>
 
-                  {/* Services Section */}
-                  <div className="p-6 sm:p-8">
-                    <h3 className="text-[18px] font-bold text-center mb-6">
-                      Nossos Serviços & Destaques
+                  {draftConfig.services.map((srv, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-xl border border-[--border] bg-[--bg-card] space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <input
+                          type="text"
+                          value={srv.title}
+                          onChange={e => {
+                            const next = [...draftConfig.services];
+                            next[idx] = { ...srv, title: e.target.value };
+                            setDraftConfig({ ...draftConfig, services: next });
+                          }}
+                          className="flex-1 px-2.5 py-1.5 rounded-lg border border-[--border] bg-[--bg] font-bold"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = draftConfig.services.filter((_, i) => i !== idx);
+                            setDraftConfig({ ...draftConfig, services: next });
+                          }}
+                          className="text-red-400 font-bold px-2"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <textarea
+                        rows={2}
+                        value={srv.description}
+                        onChange={e => {
+                          const next = [...draftConfig.services];
+                          next[idx] = { ...srv, description: e.target.value };
+                          setDraftConfig({ ...draftConfig, services: next });
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-[--border] bg-[--bg]"
+                      />
+                      <input
+                        type="text"
+                        value={srv.price || ''}
+                        onChange={e => {
+                          const next = [...draftConfig.services];
+                          next[idx] = { ...srv, price: e.target.value };
+                          setDraftConfig({ ...draftConfig, services: next });
+                        }}
+                        placeholder="Preço ou destaque (ex: R$ 80,00)"
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-[--border] bg-[--bg]"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: Contato & WhatsApp */}
+            {tab === 'contact' && (
+              <div className="space-y-3.5 text-xs">
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Telefone & WhatsApp (com DDD)
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.phone}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, phone: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Mensagem Automática do Botão WhatsApp
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={draftConfig.whatsappMessage}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, whatsappMessage: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Endereço Completo (usado no Mapa)
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.address}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, address: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold block mb-1 text-[--text-3]">
+                    Horário de Funcionamento
+                  </label>
+                  <input
+                    type="text"
+                    value={draftConfig.openingHours}
+                    onChange={e =>
+                      setDraftConfig({ ...draftConfig, openingHours: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[--border] bg-[--bg-card]"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* TAB 5: Histórico de Versões */}
+            {tab === 'versions' && (
+              <div className="space-y-2.5 text-xs max-h-[500px] overflow-y-auto">
+                <div className="font-bold text-[--text-4] uppercase text-[10.5px]">
+                  Histórico de Versões ({activeSite.versions.length})
+                </div>
+                {activeSite.versions
+                  .map((v, idx) => ({ v, idx }))
+                  .reverse()
+                  .map(({ v, idx }) => {
+                    const isCurrent = idx === activeSite.currentVersionIndex;
+                    return (
+                      <div
+                        key={v.versionNumber}
+                        className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                          isCurrent
+                            ? 'border-[#2563EB] bg-[#2563EB]/10'
+                            : 'border-[--border] bg-[--bg-card]'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold text-[--text]">
+                            Versão #{v.versionNumber}{' '}
+                            {isCurrent && (
+                              <span className="text-[10px] text-[#3B82F6]">(Ativa)</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-[--text-4] truncate">
+                            {v.instruction}
+                          </div>
+                        </div>
+                        {!isCurrent && (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreVersion(idx)}
+                            className="px-2.5 py-1 rounded-lg border border-[--border] font-bold hover:border-[#2563EB] shrink-0"
+                          >
+                            Restaurar ↺
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+
+          {/* Right Live Preview Canvas (with Direct Click-to-Edit Text!) */}
+          <div className="lg:col-span-7 flex flex-col">
+            {/* Viewport Bar */}
+            <div className="glass-card rounded-t-2xl px-4 py-2.5 border-b border-[--border-dim] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs text-[--text-4]">
+                <span className="font-mono truncate">
+                  /site/{activeSite.slug}
+                </span>
+                <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-[#2563EB]/15 text-[#3B82F6] font-bold">
+                  ✏️ Clique em qualquer texto abaixo para editar ao vivo
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                {(
+                  [
+                    ['desktop', '🖥️ Desktop'],
+                    ['tablet', '📟 Tablet'],
+                    ['mobile', '📱 Celular'],
+                  ] as [ViewportSize, string][]
+                ).map(([vp, label]) => (
+                  <button
+                    key={vp}
+                    type="button"
+                    onClick={() => setViewport(vp)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
+                      viewport === vp
+                        ? 'bg-[#2563EB] text-white'
+                        : 'text-[--text-3] hover:bg-[--bg-2]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Interactive Live Preview Container */}
+            <div className="glass-card rounded-b-2xl p-4 bg-[--bg-2] flex justify-center overflow-x-auto">
+              <div
+                className={`transition-all duration-300 rounded-2xl overflow-hidden shadow-2xl border border-[--border] ${
+                  viewport === 'mobile'
+                    ? 'w-[375px]'
+                    : viewport === 'tablet'
+                    ? 'w-[640px]'
+                    : 'w-full'
+                } ${
+                  draftConfig.darkMode
+                    ? 'bg-[#090D16] text-white'
+                    : 'bg-white text-slate-900'
+                }`}
+              >
+                {/* Live Hero */}
+                {sections.hero && (
+                  <div
+                    className="p-8 sm:p-10 text-center space-y-4"
+                    style={{
+                      background: `linear-gradient(135deg, ${draftConfig.primaryColor} 0%, ${draftConfig.secondaryColor} 100%)`,
+                      color: '#FFFFFF',
+                    }}
+                  >
+                    <span
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={e =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          badgeText: e.currentTarget.textContent || '',
+                        })
+                      }
+                      className="inline-block px-3 py-1 rounded-full text-[11px] font-bold bg-white/15 outline-dashed outline-1 outline-transparent focus:outline-white/60 cursor-text"
+                    >
+                      {draftConfig.badgeText}
+                    </span>
+
+                    <h2
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={e =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          heroTitle: e.currentTarget.textContent || '',
+                        })
+                      }
+                      className="text-2xl sm:text-3xl font-black leading-tight outline-dashed outline-1 outline-transparent focus:outline-white/60 cursor-text"
+                    >
+                      {draftConfig.heroTitle}
+                    </h2>
+
+                    <p
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={e =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          heroSubtitle: e.currentTarget.textContent || '',
+                        })
+                      }
+                      className="text-xs sm:text-sm text-white/85 max-w-lg mx-auto outline-dashed outline-1 outline-transparent focus:outline-white/60 cursor-text"
+                    >
+                      {draftConfig.heroSubtitle}
+                    </p>
+
+                    {draftConfig.heroImage && (
+                      <div className="max-w-md mx-auto rounded-2xl overflow-hidden border-2 border-white/20 shadow-lg my-3">
+                        <img
+                          src={draftConfig.heroImage}
+                          alt={draftConfig.heroTitle}
+                          className="w-full h-44 object-cover"
+                        />
+                      </div>
+                    )}
+
+                    <div className="pt-1">
+                      <span
+                        contentEditable
+                        suppressContentEditableWarning
+                        onBlur={e =>
+                          setDraftConfig({
+                            ...draftConfig,
+                            ctaText: e.currentTarget.textContent || '',
+                          })
+                        }
+                        className="inline-block px-6 py-3 rounded-xl font-extrabold text-xs text-white shadow-lg cursor-text"
+                        style={{ background: draftConfig.accentColor }}
+                      >
+                        💬 {draftConfig.ctaText}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Services */}
+                {sections.services && (
+                  <div className="p-6 sm:p-8 space-y-4">
+                    <h3 className="text-base font-extrabold text-center">
+                      Nossos Serviços e Especialidades
                     </h3>
-                    <div className="grid sm:grid-cols-3 gap-4">
-                      {cfg.services.map((srv, idx) => (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {draftConfig.services.map((srv, idx) => (
                         <div
                           key={idx}
-                          className="rounded-xl p-4 border"
-                          style={{
-                            borderColor: cfg.darkMode ? 'rgba(255,255,255,0.12)' : '#E5E7EB',
-                            background: cfg.darkMode ? 'rgba(255,255,255,0.04)' : '#F9FAFB',
-                          }}
+                          className={`p-4 rounded-xl border ${
+                            draftConfig.darkMode
+                              ? 'bg-[#111827] border-white/10'
+                              : 'bg-slate-50 border-slate-200'
+                          }`}
                         >
-                          <div className="font-bold text-[14.5px]">{srv.title}</div>
+                          <div
+                            contentEditable
+                            suppressContentEditableWarning
+                            onBlur={e => {
+                              const next = [...draftConfig.services];
+                              next[idx] = {
+                                ...srv,
+                                title: e.currentTarget.textContent || '',
+                              };
+                              setDraftConfig({ ...draftConfig, services: next });
+                            }}
+                            className="font-bold text-xs mb-1 cursor-text"
+                          >
+                            {srv.title}
+                          </div>
                           <p
-                            className="text-[12.5px] mt-1.5 leading-relaxed"
-                            style={{ color: cfg.darkMode ? '#9CA3AF' : '#4B5563' }}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onBlur={e => {
+                              const next = [...draftConfig.services];
+                              next[idx] = {
+                                ...srv,
+                                description: e.currentTarget.textContent || '',
+                              };
+                              setDraftConfig({ ...draftConfig, services: next });
+                            }}
+                            className="text-[11px] opacity-75 cursor-text"
                           >
                             {srv.description}
                           </p>
                           {srv.price && (
                             <div
-                              className="mt-3 text-[12px] font-extrabold"
-                              style={{ color: cfg.accentColor }}
+                              className="mt-2 text-[11px] font-extrabold"
+                              style={{ color: draftConfig.accentColor }}
                             >
                               {srv.price}
                             </div>
@@ -398,195 +914,59 @@ const StudioPage: NextPage = () => {
                       ))}
                     </div>
                   </div>
+                )}
 
-                  {/* Testimonials */}
+                {/* Live About */}
+                {sections.about && (
                   <div
-                    className="px-6 py-8 border-t"
-                    style={{
-                      borderColor: cfg.darkMode ? 'rgba(255,255,255,0.1)' : '#F3F4F6',
-                      background: cfg.darkMode ? '#111827' : '#F8FAFC',
-                    }}
+                    className={`p-6 sm:p-8 border-t ${
+                      draftConfig.darkMode ? 'border-white/10' : 'border-slate-200'
+                    }`}
                   >
-                    <h3 className="text-[17px] font-bold text-center mb-5">
-                      O que dizem nossos clientes no Google
+                    <h3
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={e =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          aboutTitle: e.currentTarget.textContent || '',
+                        })
+                      }
+                      className="text-base font-extrabold mb-2 cursor-text"
+                    >
+                      {draftConfig.aboutTitle}
                     </h3>
-                    <div className="grid sm:grid-cols-3 gap-4">
-                      {cfg.testimonials.map((t, i) => (
-                        <div
-                          key={i}
-                          className="rounded-xl p-4 border"
-                          style={{
-                            background: cfg.darkMode ? '#1F2937' : '#FFFFFF',
-                            borderColor: cfg.darkMode ? 'rgba(255,255,255,0.1)' : '#E5E7EB',
-                          }}
-                        >
-                          <div className="text-[#FF9F0A] text-[13px] mb-1">★★★★★</div>
-                          <p className="text-[12.5px] italic">“{t.text}”</p>
-                          <div className="mt-2 text-[11.5px] font-bold">{t.author}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* About & Contact Footer */}
-                  <div
-                    className="px-6 py-8 border-t text-center text-[13px]"
-                    style={{
-                      borderColor: cfg.darkMode ? 'rgba(255,255,255,0.1)' : '#E5E7EB',
-                    }}
-                  >
-                    <div className="font-bold text-[15px] mb-1">{cfg.aboutTitle}</div>
                     <p
-                      className="max-w-xl mx-auto text-[12.5px] leading-relaxed mb-4"
-                      style={{ color: cfg.darkMode ? '#9CA3AF' : '#4B5563' }}
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={e =>
+                        setDraftConfig({
+                          ...draftConfig,
+                          aboutText: e.currentTarget.textContent || '',
+                        })
+                      }
+                      className="text-xs leading-relaxed opacity-85 cursor-text"
                     >
-                      {cfg.aboutText}
+                      {draftConfig.aboutText}
                     </p>
-                    <div className="text-[12px] font-medium">📍 {cfg.address}</div>
-                    <div className="text-[12px] mt-1">🕒 {cfg.openingHours}</div>
-                    {!activeSite.removeBadge && (
-                      <div className="mt-4 pt-3 border-t border-black/5 text-[11px] opacity-60">
-                        Criado e hospedado com <strong>LeadSite IA</strong>
-                      </div>
-                    )}
                   </div>
-                </div>
-              </div>
-            </div>
+                )}
 
-            {/* Right Column: Conversational Chat Editor + Version History */}
-            <div className="space-y-5">
-              {/* Chat Editor Box */}
-              <div className="glass-card rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-[15px] font-bold text-[--text]">
-                    ✨ Editar conversando (IA)
-                  </h3>
-                  <span
-                    className="text-[11px] font-bold px-2 py-0.5 rounded-full"
-                    style={{ color: '#0071E3', background: 'rgba(0,113,227,0.12)' }}
-                  >
-                    Versão v{currentVersion.versionNumber}
-                  </span>
-                </div>
-                <p className="text-[12px] text-[--text-3] mb-3">
-                  Descreva o que deseja alterar em português. Cada pedido cria uma nova versão.
-                </p>
-
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {QUICK_PROMPTS.map(qp => (
-                    <button
-                      key={qp}
-                      type="button"
-                      onClick={() => handleApplyChatEdit(qp)}
-                      disabled={editing}
-                      className="text-[11px] px-2.5 py-1 rounded-full border border-[--border] bg-[--bg-card] hover:border-[#0071E3] text-[--text-2] transition-colors"
-                    >
-                      “{qp}”
-                    </button>
-                  ))}
-                </div>
-
-                <form
-                  onSubmit={e => {
-                    e.preventDefault();
-                    handleApplyChatEdit();
-                  }}
-                  className="space-y-2.5"
+                {/* Live Footer Info */}
+                <div
+                  className={`p-5 text-center text-[11px] border-t ${
+                    draftConfig.darkMode
+                      ? 'bg-[#060911] border-white/10 text-slate-400'
+                      : 'bg-slate-100 border-slate-200 text-slate-600'
+                  }`}
                 >
-                  <textarea
-                    rows={3}
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                    placeholder='Ex: "deixe o botão verde", "mude o título para...", "tema escuro"'
-                    className="w-full p-3 rounded-xl border border-[--border] bg-[--bg-card] text-[13px]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={editing || !chatInput.trim()}
-                    className="w-full py-2.5 rounded-xl text-white font-bold text-[13.5px] disabled:opacity-50"
-                    style={{ background: '#0071E3' }}
-                  >
-                    {editing ? 'Aplicando mudança com IA...' : 'Aplicar alteração no site →'}
-                  </button>
-                </form>
-              </div>
-
-              {/* Version History Rollback Card */}
-              <div className="glass-card rounded-2xl p-5">
-                <h3 className="text-[14.5px] font-bold text-[--text] mb-3">
-                  🕒 Histórico de versões ({activeSite.versions.length})
-                </h3>
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {activeSite.versions.map((ver, idx) => {
-                    const isCurrent = idx === activeSite.currentVersionIndex;
-                    return (
-                      <div
-                        key={ver.versionNumber}
-                        className={`p-3 rounded-xl border text-[12px] flex items-center justify-between gap-2 ${
-                          isCurrent
-                            ? 'border-[#0071E3] bg-[--bg-2]'
-                            : 'border-[--border-dim] bg-[--bg-card]'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="font-bold text-[--text]">
-                            Versão #{ver.versionNumber}{' '}
-                            {isCurrent && (
-                              <span className="text-[#0071E3] text-[10.5px] ml-1">(Ativa)</span>
-                            )}
-                          </div>
-                          <div className="text-[--text-3] truncate" title={ver.instruction}>
-                            “{ver.instruction}”
-                          </div>
-                        </div>
-                        {!isCurrent && (
-                          <button
-                            onClick={() => handleRollbackVersion(idx)}
-                            className="shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[--border] hover:border-[#0071E3] text-[#0071E3]"
-                          >
-                            Voltar
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Publication & Domain Settings */}
-              <div className="glass-card rounded-2xl p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[14px] font-bold">Status de Publicação</span>
-                  <button
-                    onClick={handleTogglePublish}
-                    className="text-[11.5px] font-bold px-3 py-1 rounded-full text-white"
-                    style={{ background: activeSite.published ? '#1FA855' : '#8E8E93' }}
-                  >
-                    {activeSite.published ? '● Publicado no Ar' : '○ Rascunho'}
-                  </button>
-                </div>
-                <div className="text-[12px] text-[--text-3]">
-                  Link público gratuito incluso:
-                  <div className="mt-1 font-mono text-[11.5px] p-2 rounded-lg bg-[--bg-2] border border-[--border-dim] truncate">
-                    /s/{activeSite.slug}
-                  </div>
+                  📍 {draftConfig.address} · 🕒 {draftConfig.openingHours} · 📞 +
+                  {draftConfig.phone}
                 </div>
               </div>
             </div>
           </div>
-        ) : (
-          <div className="glass-card rounded-2xl p-10 text-center">
-            <p className="text-[15px] text-[--text-3]">Nenhum site selecionado.</p>
-            <Link
-              href="/leads"
-              className="mt-4 inline-block px-6 py-2.5 rounded-full text-white font-bold text-[13.5px]"
-              style={{ background: '#0071E3' }}
-            >
-              Ir para Buscar Leads
-            </Link>
-          </div>
-        )}
+        </div>
       </AppLayout>
     </>
   );
